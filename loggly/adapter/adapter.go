@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -21,21 +22,30 @@ const (
 // Adapter satisfies the router.LogAdapter interface by providing Stream which
 // passes all messages to loggly.
 type Adapter struct {
-	bufferSize int
-	log        *log.Logger
-	logglyURL  string
-	queue      chan logglyMessage
+	bufferSize   int
+	log          *log.Logger
+	logglyURL    string
+	queue        chan logglyMessage
+	jsonHostname string
 }
 
 // New returns an Adapter that receives messages from logspout. Additionally,
 // it launches a goroutine to buffer and flush messages to loggly.
 func New(logglyToken string, tags string, bufferSize int) *Adapter {
-	adapter := &Adapter{
-		bufferSize: bufferSize,
-		log:        log.New(os.Stdout, "logspout-loggly", log.LstdFlags),
-		logglyURL:  buildLogglyURL(logglyToken, tags),
-		queue:      make(chan logglyMessage),
+	jsonHostname := ""
+	hostnameVar := os.Getenv("LOGGLY_JSON_HOSTNAME_VAR")
+	if len(hostnameVar) > 0 {
+		jsonHostname = os.Getenv(hostnameVar)
 	}
+	adapter := &Adapter{
+		bufferSize:   bufferSize,
+		log:          log.New(os.Stdout, "logspout-loggly", log.LstdFlags),
+		logglyURL:    buildLogglyURL(logglyToken, tags),
+		queue:        make(chan logglyMessage),
+		jsonHostname: jsonHostname,
+	}
+	adapter.log.Printf("HOSTNAME=%s\n", adapter.jsonHostname)
+	ioutil.WriteFile("/tmp/rchow", []byte(adapter.jsonHostname), 0777)
 
 	go adapter.readQueue()
 
@@ -46,12 +56,16 @@ func New(logglyToken string, tags string, bufferSize int) *Adapter {
 // Loggly
 func (l *Adapter) Stream(logstream chan *router.Message) {
 	for m := range logstream {
+		hostname := l.jsonHostname
+		if len(hostname) <= 0 {
+			hostname = m.Container.Config.Hostname
+		}
 		l.queue <- logglyMessage{
 			Message:           m.Data,
 			ContainerName:     m.Container.Name,
 			ContainerID:       m.Container.ID,
 			ContainerImage:    m.Container.Config.Image,
-			ContainerHostname: m.Container.Config.Hostname,
+			ContainerHostname: hostname,
 		}
 	}
 }
